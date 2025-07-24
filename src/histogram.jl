@@ -2,61 +2,49 @@ module HistogramModule
 
 using ..Types
 using ..EventModule: OrsaEvent, OrsaEventCollection
+using Base.Threads
 using Plots
+using Plots.Measures # To use units like mm for margins
+using ColorSchemes   # To access color palettes like :Blues
 
 export HistogramND, to_device
-export plot_histogram
-export to_histogram, fast_to_histogram, extract_dimension
-export plot_corner
-export fill_histogram!
+export to_histogram, extract_dimension
+export fill_histogram!, plot_histogram, plot_corner
+export +, -, *
 
 ##########
 # STRUCT #
 ##########
 
-struct HistogramND{T<:Real, N}
-    edges::NTuple{N, Vector{T}}     # Bin edges
-    counts::Array{T, N}             # Counts
-    dims::Vector{Symbol}            # Axis labels
+mutable struct HistogramND{T<:Real, N}
+    edges::NTuple{N, Vector{T}}       # Bin edges
+    counts::Array{T, N}               # Counts
+    variances::Array{T, N}            # Variance per bin
+    dims::Vector{Symbol}              # Axis labels
     device::AbstractDevice
+    exposure::Union{Nothing, T}       # Optional exposure time
 end
 
-function HistogramND(edges::NTuple{N, Vector{T}}, dims::Vector{Symbol}, device::AbstractDevice=CPU()) where {N, T<:Real}
+function HistogramND(edges::NTuple{N, Vector{T}},
+                     dims::Vector{Symbol},
+                     device::AbstractDevice=CPU()) where {N, T<:Real}
     sizes = ntuple(i -> length(edges[i]) - 1, N)
     counts = zeros(T, sizes...)
-    return HistogramND(edges, counts, dims, device)
+    variances = zeros(T, sizes...)
+    return HistogramND(edges, counts, variances, dims, device, nothing)
 end
 
-#########################
-# PLOT SUPPORT          #
-#########################
-
-function plot_histogram(h::HistogramND)
-    N = length(h.dims)
-    if N == 1
-        xedges = h.edges[1]
-        bar(xedges[1:end-1], h.counts, label="Counts", xlabel=String(h.dims[1]), ylabel="Counts", title="1D Histogram")
-    elseif N == 2
-        xedges = h.edges[1]
-        yedges = h.edges[2]
-        heatmap(xedges[1:end-1], yedges[1:end-1], h.counts',
-                xlabel=String(h.dims[1]), ylabel=String(h.dims[2]), title="2D Histogram",
-                colorbar_title="Counts")
-    else
-        @warn "Only 1D and 2D histograms can be plotted currently."
-    end
-end
 
 #########################
 # DEVICE TRANSFER       #
 #########################
 
 function to_device(h::HistogramND, ::Type{GPU})
-    HistogramND(h.edges, h.counts, h.dims, GPU())
+    HistogramND(h.edges, h.counts, h.variances, h.dims, GPU(), h.exposure)
 end
 
 function to_device(h::HistogramND, ::Type{CPU})
-    HistogramND(h.edges, h.counts, h.dims, CPU())
+    HistogramND(h.edges, h.counts, h.variances, h.dims, CPU(), h.exposure)
 end
 
 #########################
@@ -92,28 +80,214 @@ function extract_dimension(evt::OrsaEvent, dim::Symbol)
     end
 end
 
-
 #########################
-# GENERAL HISTOGRAM     #
+# FILLING SUPPORT       #
 #########################
 
-function to_histogram(events::Vector{<:OrsaEvent}; 
-                      dims::Vector{Symbol},
-                      edges::NTuple{N, Vector{T}},
-                      device::AbstractDevice = CPU()) where {T<:Real, N}
+# function fill_histogram!(h::HistogramND{T, N}, events::Vector{<:OrsaEvent};
+#                          weights::Union{Nothing, AbstractVector{T}}=nothing,
+#                          threaded::Bool=false) where {T<:Real, N}
 
-    h = HistogramND(edges, dims, device)
+#     if !threaded
+#         edges = h.edges
+#         dims = h.dims
+#         counts = h.counts
+#         vars = h.variances
 
-    @inbounds for evt in events
-        vals = ntuple(i -> extract_dimension(evt, dims[i]), N)
-        idxs = ntuple(i -> searchsortedlast(edges[i], vals[i]), N)
-        if all(i -> 1 <= idxs[i] <= length(edges[i]) - 1, 1:N)
-            h.counts[idxs...] += 1.0
+#         if threaded
+#             Threads.@threads for i in eachindex(events)
+#                 evt = events[i]
+#                 val = ntuple(d -> extract_dimension(evt, dims[d]), N)
+#                 idx = ntuple(d -> searchsortedlast(edges[d], val[d]), N)
+#                 if all(1 .<= idx .< length.(edges))
+#                     w = weights === nothing ? 1.0 :
+#                         isa(weights, Function) ? weights(evt) : weights[i]
+#                     @inbounds begin
+#                         counts[idx...] += w
+#                         vars[idx...] += w^2
+#                     end
+#                 end
+#             end
+#         else
+#             for i in eachindex(events)
+#                 evt = events[i]
+#                 val = ntuple(d -> extract_dimension(evt, dims[d]), N)
+#                 idx = ntuple(d -> searchsortedlast(edges[d], val[d]), N)
+#                 if all(1 .<= idx .< length.(edges))
+#                     w = weights === nothing ? 1.0 :
+#                         isa(weights, Function) ? weights(evt) : weights[i]
+#                     @inbounds begin
+#                         counts[idx...] += w
+#                         vars[idx...] += w^2
+#                     end
+#                 end
+#             end
+#         end
+
+#         # Auto exposure if needed
+#         if h.exposure === nothing && :time in dims
+#             times = map(e -> e.timestamp, events)
+#             h.exposure = maximum(times) - minimum(times)
+#         end
+
+#         return h
+
+#     else
+#         Threads.@threads for tid in 1:Threads.nthreads()
+#             start = floor(Int, (tid-1)*length(events)/Threads.nthreads()) + 1
+#             stop = floor(Int, tid*length(events)/Threads.nthreads())
+
+#             local_counts = zeros(T, size(h.counts))
+#             local_vars = zeros(T, size(h.variances))
+
+#             @inbounds for i in start:stop
+#                 evt = events[i]
+#                 val = ntuple(d -> extract_dimension(evt, h.dims[d]), N)
+#                 idxs = ntuple(j -> searchsortedlast(h.edges[j], val[j]), N)
+
+#                 if all(i -> 1 <= idxs[i] <= length(h.edges[i]) - 1, 1:N)
+#                     w = weights === nothing ? one(T) : weights[i]
+#                     local_counts[idxs...] += w
+#                     local_vars[idxs...] += w^2
+#                 end
+#             end
+
+#             # Safely accumulate in main histogram
+#             @sync Threads.@spawn begin
+#                 Threads.@atomic h.counts .+= local_counts
+#                 Threads.@atomic h.variances .+= local_vars
+#             end
+#         end
+
+#         # Estimate exposure from timestamps
+#         if :time in h.dims && isnan(h.exposure)
+#             tmin = minimum(extract_dimension(e, :time) for e in events)
+#             tmax = maximum(extract_dimension(e, :time) for e in events)
+#             h.exposure = tmax - tmin
+#         end
+
+#         return h
+#     end
+# end
+
+
+function fill_histogram!(h::HistogramND{T, N}, events::Vector{<:OrsaEvent{T}};
+                         weights::Union{Nothing, Vector{T}, Function} = nothing,
+                         threaded::Bool = true) where {T<:Real, N}
+
+    edges = h.edges
+    dims = h.dims
+    counts = h.counts
+    vars = h.variances
+
+    if threaded
+        Threads.@threads for i in eachindex(events)
+            evt = events[i]
+            val = ntuple(d -> extract_dimension(evt, dims[d]), N)
+            idx = ntuple(d -> searchsortedlast(edges[d], val[d]), N)
+            if all(1 .<= idx .< length.(edges))
+                w = weights === nothing ? 1.0 :
+                    isa(weights, Function) ? weights(evt) : weights[i]
+                @inbounds begin
+                    counts[idx...] += w
+                    vars[idx...] += w^2
+                end
+            end
         end
+    else
+        for i in eachindex(events)
+            evt = events[i]
+            val = ntuple(d -> extract_dimension(evt, dims[d]), N)
+            idx = ntuple(d -> searchsortedlast(edges[d], val[d]), N)
+            if all(1 .<= idx .< length.(edges))
+                w = weights === nothing ? 1.0 :
+                    isa(weights, Function) ? weights(evt) : weights[i]
+                @inbounds begin
+                    counts[idx...] += w
+                    vars[idx...] += w^2
+                end
+            end
+        end
+    end
+
+    # Auto exposure if needed
+    if h.exposure === nothing && :time in dims
+        times = map(e -> e.timestamp, events)
+        h.exposure = maximum(times) - minimum(times)
     end
 
     return h
 end
+
+function fill_histogram!(h::HistogramND, collection::OrsaEventCollection; kwargs...)
+    return fill_histogram!(h, collection.OrsaEvents; kwargs...)
+end
+
+#########################
+# BASIC OPERATIONS      #
+#########################
+
+# Histogram + Histogram
+function Base.:+(h1::HistogramND, h2::HistogramND)
+    @assert h1.edges == h2.edges && h1.dims == h2.dims "Histogram structure mismatch"
+    hnew = HistogramND(h1.edges, h1.dims, h1.device)
+    hnew.counts .= h1.counts .+ h2.counts
+    hnew.variances .= h1.variances .+ h2.variances
+    hnew.exposure = (h1.exposure === nothing || h2.exposure === nothing) ? nothing : h1.exposure + h2.exposure
+    return hnew
+end
+
+# Histogram - Histogram
+function Base.:-(h1::HistogramND, h2::HistogramND)
+    @assert h1.edges == h2.edges && h1.dims == h2.dims "Histogram structure mismatch"
+    hnew = HistogramND(h1.edges, h1.dims, h1.device)
+    hnew.counts .= h1.counts .- h2.counts
+    hnew.variances .= h1.variances .+ h2.variances
+    hnew.exposure = (h1.exposure === nothing || h2.exposure === nothing) ? nothing : h1.exposure + h2.exposure
+    return hnew
+end
+
+# Histogram * scalar or array
+function Base.:*(h::HistogramND, x::Union{Real, AbstractArray})
+    hnew = HistogramND(h.edges, h.dims, h.device)
+    hnew.counts .= h.counts .* x
+    hnew.variances .= h.variances .* (x.^2)
+    hnew.exposure = h.exposure
+    return hnew
+end
+
+#########################
+# to_histogram Wrappers #
+#########################
+
+function to_histogram(events::Vector{<:OrsaEvent};
+                      dims::Vector{Symbol},
+                      edges::NTuple{N, Vector{T}},
+                      device::AbstractDevice = CPU(),
+                      weights::Union{Nothing, AbstractVector{<:Real}} = nothing,
+                      threaded::Bool = false,
+                      exposure::Union{Nothing, Real} = nothing
+                      ) where {T<:Real, N}
+
+    h = HistogramND(edges, dims, device)
+
+    if threaded
+        fill_histogram!(h, events; weights=weights, threaded=true)
+    else
+        fill_histogram!(h, events; weights=weights)
+    end
+
+    # Track exposure, either user-defined or auto-computed
+    if isnothing(exposure)
+        timestamps = map(e -> e.timestamp, events)
+        h.exposure = maximum(timestamps) - minimum(timestamps)
+    else
+        h.exposure = exposure
+    end
+
+    return h
+end
+
 
 function to_histogram(collection::OrsaEventCollection;
                       dims::Vector{Symbol},
@@ -123,91 +297,56 @@ function to_histogram(collection::OrsaEventCollection;
 end
 
 #########################
-# FAST HISTOGRAM 2D     #
+# Plotting              #
 #########################
 
-"""
-    fast_to_histogram(events, edges, dims)
+function plot_histogram(h::HistogramND{T, 1}; with_errorbars::Bool=false) where {T}
+    xedges = h.edges[1]
+    centers = (xedges[1:end-1] .+ xedges[2:end]) ./ 2
+    widths = diff(xedges)
+    y = h.counts
+    yerr = with_errorbars && h.variances !== nothing ? sqrt.(h.variances) : nothing
 
-Optimized 2D histogram for [:x, :y] or [:energy, :radius] with fewer allocations.
-"""
-function fast_to_histogram(events::Vector{<:OrsaEvent{T}},
-                           edges::Tuple{Vector{T}, Vector{T}},
-                           dims::Tuple{Symbol, Symbol},
-                           device::AbstractDevice = CPU()) where {T<:Real}
+    bar(centers, y;
+        bar_width=widths,
+        yerror=yerr,
+        label="Counts",
+        xlabel=String(h.dims[1]),
+        ylabel="Counts",
+        title="1D Histogram" * (with_errorbars ? " (w/ error bars)" : "")
+    )
+end
 
-    edge1, edge2 = edges
-    dim1, dim2 = dims
-    counts = zeros(T, length(edge1)-1, length(edge2)-1)
-
-    @inbounds for evt in events
-        val1 = extract_dimension(evt, dim1)
-        val2 = extract_dimension(evt, dim2)
-
-        i = searchsortedlast(edge1, val1)
-        j = searchsortedlast(edge2, val2)
-
-        if 1 <= i < length(edge1) && 1 <= j < length(edge2)
-            counts[i, j] += 1.0
-        end
+function plot_histogram(h::HistogramND{T, 2}; with_errorbars::Bool=false) where {T}
+    if with_errorbars
+        @warn "plot_histogram with error bars is only implemented for 1D histograms. Ignoring."
     end
 
-    return HistogramND((edge1, edge2), counts, [dim1, dim2], device)
+    xedges = h.edges[1]
+    yedges = h.edges[2]
+    heatmap(xedges[1:end-1], yedges[1:end-1], h.counts';
+            xlabel=String(h.dims[1]),
+            ylabel=String(h.dims[2]),
+            title="2D Histogram",
+            colorbar_title="Counts")
 end
 
-"""
-    fast_to_histogram(events::Vector{OrsaEvent}, edges::NTuple{N, Vector}, dims::NTuple{N, Symbol})
+function plot_histogram(h::HistogramND; with_errorbars::Bool=false)
+    @warn "Only 1D and 2D histograms can be plotted currently."
+end
 
-Fill an N-dimensional histogram with given bin edges and dimension names.
-"""
-function fast_to_histogram(events::Vector{<:OrsaEvent},
-                           edges::NTuple{N, Vector{Float64}},
-                           dims::NTuple{N, Symbol}) where {N}
-    counts = zeros(Float64, ntuple(i -> length(edges[i]) - 1, N)...)
 
-    @inbounds for evt in events
-        values = ntuple(i -> extract_dimension(evt, dims[i]), N)
-        idxs = ntuple(i -> searchsortedlast(edges[i], values[i]), N)
-
-        in_bounds = all(i -> 1 <= idxs[i] < length(edges[i]), 1:N)
-        if in_bounds
-            counts[idxs...] += 1.0
-        end
+function view_histogram(h::HistogramND; rate::Bool=false)
+    if rate && !isnan(h.exposure) && h.exposure > 0
+        scaled_counts = h.counts ./ h.exposure
+        scaled_vars = h.variances ./ (h.exposure^2)
+        return HistogramND(h.edges, scaled_counts, h.dims, h.device, scaled_vars, h.exposure)
+    else
+        return h
     end
-
-    return HistogramND(edges, counts, collect(dims), CPU())
-end
-
-"""
-    fill_histogram!(h::HistogramND, events::Vector{<:OrsaEvent})
-
-Add events to an existing histogram `h`, modifying its `counts` in place.
-"""
-function fill_histogram!(h::HistogramND{T, N}, events::Vector{<:OrsaEvent}) where {T<:Real, N}
-    @inbounds for evt in events
-        vals = ntuple(i -> extract_dimension(evt, h.dims[i]), N)
-        idxs = ntuple(i -> searchsortedlast(h.edges[i], vals[i]), N)
-
-        in_bounds = all(i -> 1 <= idxs[i] <= length(h.edges[i]) - 1, 1:N)
-        if in_bounds
-            h.counts[idxs...] += 1.0
-        end
-    end
-    return h
-end
-
-"""
-    fill_histogram!(h::HistogramND, collection::OrsaEventCollection)
-
-Add events from an `OrsaEventCollection` to an existing histogram `h`.
-"""
-function fill_histogram!(h::HistogramND{T, N}, collection::OrsaEventCollection) where {T<:Real, N}
-    return fill_histogram!(h, collection.OrsaEvents)
 end
 
 
-using Plots.Measures # To use units like mm for margins
-using ColorSchemes   # To access color palettes like :Blues
 
 """
     plot_corner(h::HistogramND)
