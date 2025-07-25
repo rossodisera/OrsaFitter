@@ -17,7 +17,7 @@ struct OrsaEvent{T<:Real}
     position_cyl::SVector{3, UncertainValue{T}}
     multiplicity::Int
     npe::UncertainValue{T}
-    reco_energy::UncertainValue{T}
+    energy::UncertainValue{T}
     device::AbstractDevice
 end
 
@@ -33,7 +33,7 @@ function OrsaEventCollection(events::Vector{OrsaEvent}, device::AbstractDevice)
 end
 
 function Event_from_cartesian(timestamp, x::UncertainValue, y::UncertainValue, z::UncertainValue,
-                              multiplicity::Int, npe::UncertainValue, reco_energy::UncertainValue;
+                              multiplicity::Int, npe::UncertainValue, energy::UncertainValue;
                               device=CPU())
     # Cartesian
     pos_cart = @SVector [x, y, z]
@@ -56,11 +56,11 @@ function Event_from_cartesian(timestamp, x::UncertainValue, y::UncertainValue, z
     pos_cyl = @SVector [ρ, ϕ_cyl, z]
 
 
-    return OrsaEvent(timestamp, pos_cart, pos_sph, pos_cyl, multiplicity, npe, reco_energy, device)
+    return OrsaEvent(timestamp, pos_cart, pos_sph, pos_cyl, multiplicity, npe, energy, device)
 end
 
 function Event_from_spherical(timestamp, r, θ, ϕ,
-                              multiplicity, npe, reco_energy; device=CPU())
+                              multiplicity, npe, energy; device=CPU())
     x_val = r.value * sin(θ.value) * cos(ϕ.value)
     y_val = r.value * sin(θ.value) * sin(ϕ.value)
     z_val = r.value * cos(θ.value)
@@ -69,7 +69,7 @@ function Event_from_spherical(timestamp, r, θ, ϕ,
     y = UncertainValue(y_val, 0.0, 0.0)
     z = UncertainValue(z_val, 0.0, 0.0)
 
-    return Event_from_cartesian(timestamp, x, y, z, multiplicity, npe, reco_energy; device=device)
+    return Event_from_cartesian(timestamp, x, y, z, multiplicity, npe, energy; device=device)
 end
 
 
@@ -78,7 +78,7 @@ Base.show(io::IO, e::OrsaEvent) = print(io, """
 OrsaEvent @ $(e.timestamp)
   Multiplicity: $(e.multiplicity)
   NPE: $(e.npe)
-  Energy: $(e.reco_energy)
+  Energy: $(e.energy)
   Position (x,y,z): $(e.position_cart)
 """)
 

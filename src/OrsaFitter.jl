@@ -7,5 +7,7 @@ include("types.jl")
 include("utils.jl")
 include("event.jl")
 include("histogram.jl")
+include("generator.jl")
+include("reactor.jl")
 
 end
