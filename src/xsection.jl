@@ -39,7 +39,7 @@ function IBDModel{T}(;
     has_recoil::Bool = true
 ) where T
     h = hash((energy_nu, n_targets, xs_model, has_recoil))
-    println("[IBDModel] Initialized with model $xs_model, recoil: $has_recoil, and n_targets: $n_targets")
+    # println("[IBDModel] Initialized with model $xs_model, recoil: $has_recoil, and n_targets: $n_targets")
     return IBDModel{T}(energy_nu, n_targets, xs_model, has_recoil, nothing, h)
 end
 
@@ -70,7 +70,7 @@ function get_xs(m::IBDModel{T}) where T
         return m.cached_xs
     end
 
-    println("[IBDModel] Computing cross-section with model: $(m.xs_model)")
+    # println("[IBDModel] Computing cross-section with model: $(m.xs_model)")
     xs_values = zeros(T, length(m.energy_nu))
     
     @threads for i in eachindex(m.energy_nu)
@@ -134,7 +134,7 @@ end
 
 "Computes the kinematic transformation matrix for a given output binning."
 function _get_kinematic_matrix(model::IBDModel{T}, nu_edges::Vector{T}, dep_edges::Vector{T}) where T
-    println("[IBDModel] Computing kinematic smearing matrix...")
+    # println("[IBDModel] Computing kinematic smearing matrix...")
     n_dep_bins = length(dep_edges) - 1
     n_nu_bins = length(model.energy_nu)
     smearing_matrix = zeros(T, n_dep_bins, n_nu_bins)
@@ -172,7 +172,7 @@ function apply_ibd(hist_nu::AbstractHistogramND{T, N}, model::IBDModel{T}; apply
     E_nu_centers = (hist_nu.edges[energy_dim_idx][1:end-1] .+ hist_nu.edges[energy_dim_idx][2:end]) ./ 2
     if E_nu_centers != model.energy_nu; error("The energy binning of the histogram does not match the energy centers in the IBDModel."); end
     
-    println("Applying IBD physics to $(typeof(hist_nu).name.name) (apply_kinematics=$apply_kinematics)...")
+    # println("Applying IBD physics to $(typeof(hist_nu).name.name) (apply_kinematics=$apply_kinematics)...")
     
     scaling_factor = get_xs(model) * model.n_targets
 
@@ -184,14 +184,14 @@ function apply_ibd(hist_nu::AbstractHistogramND{T, N}, model::IBDModel{T}; apply
     hist_with_xs.variances .*= scaling_reshaped.^2
 
     if !apply_kinematics
-        println("Flux-to-rate scaling applied to N-dimensional histogram.")
+        # println("Flux-to-rate scaling applied to N-dimensional histogram.")
         return hist_with_xs
     end
     
-    println("Applying kinematic smearing...")
+    # println("Applying kinematic smearing...")
     
     temp_hist_counts = if isa(hist_with_xs, PDFHistogramND)
-        println("Temporarily converting PDF to Histogram for smearing.")
+        # println("Temporarily converting PDF to Histogram for smearing.")
         to_histogram(hist_with_xs)
     else
         hist_with_xs
@@ -234,7 +234,7 @@ function apply_ibd(hist_nu::AbstractHistogramND{T, N}, model::IBDModel{T}; apply
     hist_dep_counts.exposure = hist_nu.exposure
     
     if isa(hist_nu, PDFHistogramND)
-        println("Converting result back to PDF.")
+        # println("Converting result back to PDF.")
         return to_pdf(hist_dep_counts)
     else
         return hist_dep_counts

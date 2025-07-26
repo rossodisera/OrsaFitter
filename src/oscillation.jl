@@ -63,14 +63,14 @@ end
 
 # Generate fixed integration subsamples between 0 and 1
 function generate_samples(m::OscillationModel)
-    println("Generating subsample points")
+    # println("Generating subsample points")
     R = m.subsample_resolution
     return collect(range(0, 1; length=R))
 end
 
 # Choose samples for bin integration using either fixed or random methods
 function select_bin_samples(lo::T, hi::T, base_points::Vector{T}, method::Symbol) where T
-    println("Selecting samples for bin [$lo, $hi] using method: $method")
+    # println("Selecting samples for bin [$lo, $hi] using method: $method")
     if method == :subsample
         return [lo + (hi - lo) * p for p in base_points]
     elseif method == :random
@@ -147,10 +147,10 @@ end
 
 # Compute survival probabilities for all energy bins with caching
 function get_probs(m::OscillationModel{T}) where T
-    println("Computing oscillation probabilities with integration method: $(m.integration_method)")
+    # println("Computing oscillation probabilities with integration method: $(m.integration_method)")
     h = hash(m)
     if m.output_prob !== nothing && m.cache_hash == h
-        println("Using cached oscillation probabilities")
+        # println("Using cached oscillation probabilities")
         return m.output_prob
     end
 
@@ -182,7 +182,7 @@ end
 
 # Apply oscillation probability to a histogram by scaling energy axis
 function oscillate(hist::AbstractHistogramND, model::OscillationModel)
-    println("Applying oscillation to histogram...")
+    # println("Applying oscillation to histogram...")
     energy_dim = findfirst(==(:energy), hist.dims)
     energy_edges = hist.edges[energy_dim]
     energy_centers = (energy_edges[1:end-1] + energy_edges[2:end]) ./ 2
@@ -205,7 +205,7 @@ end
 
 # Plot survival probability curve
 function plot_oscillation(model::OscillationModel)
-    println("Plotting oscillation survival probability curve")
+    # println("Plotting oscillation survival probability curve")
     probs = get_probs(model)
     plot(model.energy, probs; xlabel="E (MeV)", ylabel="Survival probability",
          label="$(model.osc_type), $(model.component)", lw=2, legend=:bottomleft)

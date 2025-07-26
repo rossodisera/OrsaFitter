@@ -115,7 +115,7 @@ Applies the full chain of detector effects to a visible energy histogram.
 2.  Scales the result by the detection efficiency map.
 """
 function apply_detector_effects(hist_vis::AbstractHistogramND{T, N}, model::DetectorModel{T}) where {T, N}
-    println("Applying detector effects (Resolution + Efficiency)...")
+    # println("Applying detector effects (Resolution + Efficiency)...")
 
     # --- Step 1: Apply Energy Resolution ---
     energy_idx = findfirst(d -> d in [:energy_vis, :energy_dep], hist_vis.dims)
@@ -196,7 +196,7 @@ function apply_detector_effects(hist_vis::AbstractHistogramND{T, N}, model::Dete
     end
     
     if isempty(common_dims_info)
-        @warn "No common dimensions found for efficiency map. Applying uniform efficiency."
+        # @warn "No common dimensions found for efficiency map. Applying uniform efficiency."
         efficiency_scaler = ndims(eff_map.counts) == 0 ? eff_map.counts[] : ones(T, ntuple(d->1, N))
     else
         target_shape = ntuple(N) do i

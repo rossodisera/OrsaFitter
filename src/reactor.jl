@@ -45,7 +45,7 @@ function ReactorSpectrumGenerator{T, N}(; model, fission_fractions, thermal_powe
                                         integration_method::Symbol = :center, subsample_resolution::Int = 3) where {T, N}
     h = hash((model, fission_fractions, thermal_power, distance, radius_profile,
               time_profile, output_dims, output_edges, output_type, integration_method, subsample_resolution))
-    println("[ReactorGenerator] Initialized with model $model and output_type $output_type")
+    # println("[ReactorGenerator] Initialized with model $model and output_type $output_type")
     return ReactorSpectrumGenerator{T, N}(model, fission_fractions, thermal_power, distance,
         radius_profile, time_profile, output_dims, output_edges, output_type,
         integration_method, subsample_resolution, nothing, nothing, h)
@@ -83,7 +83,7 @@ end
 
 # Apply volume factor to histogram for correct physical interpretation
 function apply_bin_volume!(h::HistogramND{T, N}) where {T, N}
-    println("Applying geometric bin volume factors")
+    # println("Applying geometric bin volume factors")
     for idx in CartesianIndices(h.counts)
         volume = one(T)
         for d in 1:N
@@ -99,7 +99,7 @@ end
 
 # Core flux evaluation loop
 function _evaluate(g::ReactorSpectrumGenerator{T, N}) where {T, N}
-    println("Evaluating reactor spectrum histogram...")
+    # println("Evaluating reactor spectrum histogram...")
     h = HistogramND(g.output_edges, g.output_dims)
     flux_fun = get_reactor_flux_function(g.model, g.fission_fractions)
     idxs = CartesianIndices(h.counts)
@@ -144,10 +144,10 @@ end
 function get_pdf(g::ReactorSpectrumGenerator)
     h_current = hash(g)
     if g.cached_histogram !== nothing && g.cache_hash == h_current
-        println("[ReactorGenerator] Using cached output")
+        # println("[ReactorGenerator] Using cached output")
         return g.cached_histogram
     else
-        println("[ReactorGenerator] Recomputing output PDF/histogram")
+        # println("[ReactorGenerator] Recomputing output PDF/histogram")
         g.cached_subsamples = g.integration_method in [:subsample, :random] ? generate_samples(g) : nothing
         h = _evaluate(g)
         g.cached_histogram = h

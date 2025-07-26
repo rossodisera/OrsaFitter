@@ -35,7 +35,7 @@ function EffectiveNonLinearityModel{T}(;
     parameters::Dict{Symbol, T}
 ) where T
     h = hash((nl_model, parameters))
-    println("[EffectiveNL] Initialized with model :$nl_model")
+    # println("[EffectiveNL] Initialized with model :$nl_model")
     EffectiveNonLinearityModel{T}(nl_model, parameters, nothing, h)
 end
 
@@ -93,7 +93,7 @@ function _eval_nl_values(E_centers::Vector{T}, model::EffectiveNonLinearityModel
         return model.cached_nl_values
     end
     
-    println("[EffectiveNL] Evaluating non-linearity values for model :$(model.nl_model)")
+    # println("[EffectiveNL] Evaluating non-linearity values for model :$(model.nl_model)")
     nl_values = similar(E_centers)
     
     @threads for i in eachindex(E_centers)
@@ -119,7 +119,7 @@ Applies the effective non-linearity model to a histogram.
 This transforms the `:energy_dep` axis to `:energy_vis` by re-calculating the bin edges.
 """
 function apply_non_linearity(hist_dep::AbstractHistogramND{T, N}, model::EffectiveNonLinearityModel{T}) where {T, N}
-    println("Applying Effective Non-Linearity model...")
+    # println("Applying Effective Non-Linearity model...")
     
     dep_energy_idx = findfirst(==(:energy_dep), hist_dep.dims)
     if dep_energy_idx === nothing
@@ -156,7 +156,7 @@ Applies the realistic non-linearity model to a histogram. This follows a multi-s
 4. Scales the counts by the inverse of the gain.
 """
 function apply_non_linearity(hist_dep::AbstractHistogramND{T, N}, model::RealisticNonLinearityModel{T}) where {T, N}
-    println("Applying Realistic Non-Linearity model...")
+    # println("Applying Realistic Non-Linearity model...")
 
     dep_energy_idx = findfirst(==(:energy_dep), hist_dep.dims)
     if dep_energy_idx === nothing; error("Input histogram must have an ':energy_dep' dimension."); end

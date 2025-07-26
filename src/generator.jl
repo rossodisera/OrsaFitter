@@ -17,7 +17,7 @@ const generator_registry = Dict{String, AbstractSpectrumGenerator}()
 
 # Register a named generator into the global registry
 function register_generator!(name::String, g::AbstractSpectrumGenerator)
-    println("Registering spectrum generator: $name")
+    # println("Registering spectrum generator: $name")
     generator_registry[name] = g
 end
 

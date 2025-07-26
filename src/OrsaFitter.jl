@@ -13,5 +13,6 @@ include("oscillation.jl")
 include("xsection.jl")
 include("nonlinearity.jl")
 include("detector.jl")
+include("fitter.jl")
 
 end
