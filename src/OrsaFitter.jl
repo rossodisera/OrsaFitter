@@ -9,5 +9,9 @@ include("event.jl")
 include("histogram.jl")
 include("generator.jl")
 include("reactor.jl")
+include("oscillation.jl")
+include("xsection.jl")
+include("nonlinearity.jl")
+include("detector.jl")
 
 end
