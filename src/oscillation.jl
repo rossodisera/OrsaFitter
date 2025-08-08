@@ -2,7 +2,9 @@
 
 module OscillationModule
 
-export OscillationModel, oscillate, plot_oscillation
+export AbstractOscillationProbability, OscillationModel, oscillate, plot_oscillation
+
+abstract type AbstractOscillationProbability end
 
 using ..Types
 using ..HistogramModule
@@ -12,7 +14,7 @@ using Base.Threads
 using Plots
 
 # Model for neutrino oscillation including matter effects and bin integration
-mutable struct OscillationModel{T}
+mutable struct OscillationModel{T} <: AbstractOscillationProbability
     energy::Vector{T}                  # Bin centers
     distance::T                        # Distance in meters
     dm2_21::T

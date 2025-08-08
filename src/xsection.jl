@@ -1,8 +1,10 @@
-### IBDModule.jl
+### CrossSectionModule.jl
 
-module IBDModule
+module CrossSectionModule
 
-export IBDModel, apply_ibd
+export AbstractCrossSection, CrossSectionModel, apply_xsection
+
+abstract type AbstractCrossSection end
 
 using ..Types
 using ..HistogramModule
@@ -17,12 +19,12 @@ const DELTA_NP = M_N - M_P # Mass difference
 const ENU_THRESHOLD = 1.806 # IBD energy threshold in MeV
 
 """
-    IBDModel
+    CrossSectionModel
 
-A model for calculating Inverse Beta Decay (IBD) cross-sections and kinematic transformations.
+A model for calculating cross-sections and kinematic transformations.
 The deposited energy binning is now calculated automatically from the input histogram's binning.
 """
-mutable struct IBDModel{T<:Real}
+mutable struct CrossSectionModel{T<:Real} <: AbstractCrossSection
     energy_nu::Vector{T}
     n_targets::T # Number of target particles (e.g., free protons)
     xs_model::Symbol
@@ -32,20 +34,20 @@ mutable struct IBDModel{T<:Real}
 end
 
 # --- Constructors ---
-function IBDModel{T}(;
+function CrossSectionModel{T}(;
     energy_nu,
     n_targets,
     xs_model::Symbol = :strumia_vissani,
     has_recoil::Bool = true
 ) where T
     h = hash((energy_nu, n_targets, xs_model, has_recoil))
-    # println("[IBDModel] Initialized with model $xs_model, recoil: $has_recoil, and n_targets: $n_targets")
-    return IBDModel{T}(energy_nu, n_targets, xs_model, has_recoil, nothing, h)
+    # println("[CrossSectionModel] Initialized with model $xs_model, recoil: $has_recoil, and n_targets: $n_targets")
+    return CrossSectionModel{T}(energy_nu, n_targets, xs_model, has_recoil, nothing, h)
 end
 
-function IBDModel(; kwargs...)
+function CrossSectionModel(; kwargs...)
     T = eltype(kwargs[:energy_nu])
-    IBDModel{T}(; kwargs...)
+    CrossSectionModel{T}(; kwargs...)
 end
 
 # --- Cross-Section Calculation ---
@@ -63,14 +65,14 @@ function _xs_strumia_vissani(E_nu::T) where T
     return 1e-43 * p_e * E_e * (E_nu^exponent)
 end
 
-"Computes and caches the IBD cross-section for all energy bins."
-function get_xs(m::IBDModel{T}) where T
+"Computes and caches the cross-section for all energy bins."
+function get_xs(m::CrossSectionModel{T}) where T
     h = hash(m)
     if m.cached_xs !== nothing && m.cache_hash == h
         return m.cached_xs
     end
 
-    # println("[IBDModel] Computing cross-section with model: $(m.xs_model)")
+    # println("[CrossSectionModel] Computing cross-section with model: $(m.xs_model)")
     xs_values = zeros(T, length(m.energy_nu))
     
     @threads for i in eachindex(m.energy_nu)
@@ -133,8 +135,8 @@ function _calculate_dep_edges(nu_edges::Vector{T}, has_recoil::Bool) where T
 end
 
 "Computes the kinematic transformation matrix for a given output binning."
-function _get_kinematic_matrix(model::IBDModel{T}, nu_edges::Vector{T}, dep_edges::Vector{T}) where T
-    # println("[IBDModel] Computing kinematic smearing matrix...")
+function _get_kinematic_matrix(model::CrossSectionModel{T}, nu_edges::Vector{T}, dep_edges::Vector{T}) where T
+    # println("[CrossSectionModel] Computing kinematic smearing matrix...")
     n_dep_bins = length(dep_edges) - 1
     n_nu_bins = length(model.energy_nu)
     smearing_matrix = zeros(T, n_dep_bins, n_nu_bins)
@@ -166,13 +168,13 @@ function _get_kinematic_matrix(model::IBDModel{T}, nu_edges::Vector{T}, dep_edge
 end
 
 # --- Main Application Function ---
-function apply_ibd(hist_nu::AbstractHistogramND{T, N}, model::IBDModel{T}; apply_kinematics::Bool = true) where {T, N}
+function apply_xsection(hist_nu::AbstractHistogramND{T, N}, model::CrossSectionModel{T}; apply_kinematics::Bool = true) where {T, N}
     energy_dim_idx = findfirst(==(:energy), hist_nu.dims)
     if energy_dim_idx === nothing; error("Input histogram must have an ':energy' dimension."); end
     E_nu_centers = (hist_nu.edges[energy_dim_idx][1:end-1] .+ hist_nu.edges[energy_dim_idx][2:end]) ./ 2
-    if E_nu_centers != model.energy_nu; error("The energy binning of the histogram does not match the energy centers in the IBDModel."); end
+    if E_nu_centers != model.energy_nu; error("The energy binning of the histogram does not match the energy centers in the CrossSectionModel."); end
     
-    # println("Applying IBD physics to $(typeof(hist_nu).name.name) (apply_kinematics=$apply_kinematics)...")
+    # println("Applying xsection physics to $(typeof(hist_nu).name.name) (apply_kinematics=$apply_kinematics)...")
     
     scaling_factor = get_xs(model) * model.n_targets
 

@@ -1,24 +1,26 @@
-### Utils.jl
+module UtilsModule
 
-module Utils
+export corr2cov, cov2corr
 
-using ..Types
-using ForwardDiff
+function corr2cov(corr::Matrix, err::Vector)
+    cov = similar(corr)
+    for i in 1:size(corr, 1)
+        for j in 1:size(corr, 2)
+            cov[i, j] = corr[i, j] * err[i] * err[j]
+        end
+    end
+    return cov
+end
 
-export propagate
-
-"""
-    propagate(f, u::UncertainValue)
-
-Propagate uncertainty through a scalar function `f` using automatic differentiation.
-Calculates the central value and derivatives to estimate upper and lower uncertainties.
-"""
-function propagate(f::Function, u::UncertainValue{T}) where {T}
-    # println("Propagating uncertainty for value: $(u.value)")
-    v = f(u.value)  # Evaluate function at central value
-    dfdx = ForwardDiff.derivative(f, u.value)  # Compute df/dx using autodiff
-    # println("Computed derivative: $dfdx")
-    return UncertainValue(v, abs(dfdx * u.σ⁻), abs(dfdx * u.σ⁺))
+function cov2corr(cov::Matrix)
+    err = sqrt.(diag(cov))
+    corr = similar(cov)
+    for i in 1:size(cov, 1)
+        for j in 1:size(cov, 2)
+            corr[i, j] = cov[i, j] / (err[i] * err[j])
+        end
+    end
+    return corr
 end
 
 end

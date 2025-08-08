@@ -6,11 +6,12 @@ export ReactorSpectrumGenerator, get_pdf
 
 using ..Types
 using ..HistogramModule
-using ..SpectrumModule: AbstractSpectrumGenerator, register_generator!
+using ..GeneratorModule: AbstractGenerator, register_generator!
 using Printf, LinearAlgebra, SHA
 using Distributions, StatsBase
 using DelimitedFiles, Interpolations
 using Base.Threads
+using Logging
 
 """
 ReactorSpectrumGenerator computes antineutrino flux histograms or PDFs
@@ -22,7 +23,7 @@ Fields:
 - output_type: :pdf or :histogram
 - integration_method: :center, :subsample, :random
 """
-mutable struct ReactorSpectrumGenerator{T, N} <: AbstractSpectrumGenerator
+-mutable struct ReactorSpectrumGenerator{T, N} <: AbstractGenerator
     model::String
     fission_fractions::Union{Dict{String,T}, Vector{Pair{Float64,Dict{String,T}}}}
     thermal_power::Union{Nothing, T}
@@ -45,7 +46,7 @@ function ReactorSpectrumGenerator{T, N}(; model, fission_fractions, thermal_powe
                                         integration_method::Symbol = :center, subsample_resolution::Int = 3) where {T, N}
     h = hash((model, fission_fractions, thermal_power, distance, radius_profile,
               time_profile, output_dims, output_edges, output_type, integration_method, subsample_resolution))
-    # println("[ReactorGenerator] Initialized with model $model and output_type $output_type")
+    @info "[ReactorGenerator] Initialized with model $model and output_type $output_type"
     return ReactorSpectrumGenerator{T, N}(model, fission_fractions, thermal_power, distance,
         radius_profile, time_profile, output_dims, output_edges, output_type,
         integration_method, subsample_resolution, nothing, nothing, h)
@@ -83,7 +84,7 @@ end
 
 # Apply volume factor to histogram for correct physical interpretation
 function apply_bin_volume!(h::HistogramND{T, N}) where {T, N}
-    # println("Applying geometric bin volume factors")
+    @debug "Applying geometric bin volume factors"
     for idx in CartesianIndices(h.counts)
         volume = one(T)
         for d in 1:N
@@ -99,7 +100,7 @@ end
 
 # Core flux evaluation loop
 function _evaluate(g::ReactorSpectrumGenerator{T, N}) where {T, N}
-    # println("Evaluating reactor spectrum histogram...")
+    @debug "Evaluating reactor spectrum histogram..."
     h = HistogramND(g.output_edges, g.output_dims)
     flux_fun = get_reactor_flux_function(g.model, g.fission_fractions)
     idxs = CartesianIndices(h.counts)
@@ -140,14 +141,18 @@ function _evaluate(g::ReactorSpectrumGenerator{T, N}) where {T, N}
     return g.output_type == :pdf ? to_pdf(h) : h
 end
 
+function get_pdf_func(g::ReactorSpectrumGenerator)
+    return get_reactor_flux_function(g.model, g.fission_fractions)
+end
+
 # Main entry point with caching
 function get_pdf(g::ReactorSpectrumGenerator)
     h_current = hash(g)
     if g.cached_histogram !== nothing && g.cache_hash == h_current
-        # println("[ReactorGenerator] Using cached output")
+        @debug "[ReactorGenerator] Using cached output"
         return g.cached_histogram
     else
-        # println("[ReactorGenerator] Recomputing output PDF/histogram")
+        @info "[ReactorGenerator] Recomputing output PDF/histogram"
         g.cached_subsamples = g.integration_method in [:subsample, :random] ? generate_samples(g) : nothing
         h = _evaluate(g)
         g.cached_histogram = h
@@ -169,6 +174,8 @@ end
 
 # --- Flux model and normalization utils --- #
 
+const FLUX_CACHE = Dict{String, Any}()
+
 function format_isotope_for_filename(iso::String)
     m = match(r"([A-Za-z]+)([0-9]+)", iso)
     m !== nothing ? "$(m[2])$(m[1])" : iso
@@ -185,10 +192,15 @@ function load_bump_correction(path::String)
 end
 
 function get_reactor_flux_function(model::String, ff)
-    path = joinpath(@__DIR__, "..", "data", "flux_" * model)
-    isotopes = ["U235", "U238", "Pu239", "Pu241"]
-    interp_flux = Dict(iso => load_log_flux(joinpath(path, "log_flux_$(format_isotope_for_filename(iso)).dat")) for iso in isotopes)
-    bump = model == "hm_bump" ? load_bump_correction(joinpath(@__DIR__, "..", "data", "flux_CommonInput", "bumpcorrection.dat")) : nothing
+    if !haskey(FLUX_CACHE, model)
+        path = joinpath(@__DIR__, "..", "data", "flux_" * model)
+        isotopes = ["U235", "U238", "Pu239", "Pu241"]
+        interp_flux = Dict(iso => load_log_flux(joinpath(path, "log_flux_$(format_isotope_for_filename(iso)).dat")) for iso in isotopes)
+        bump = model == "hm_bump" ? load_bump_correction(joinpath(@__DIR__, "..", "data", "flux_CommonInput", "bumpcorrection.dat")) : nothing
+        FLUX_CACHE[model] = (interp_flux, bump)
+    end
+
+    interp_flux, bump = FLUX_CACHE[model]
 
     if isa(ff, Dict)
         norm_ff = normalize_fractions(ff)
