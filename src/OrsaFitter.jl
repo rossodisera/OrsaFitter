@@ -4,10 +4,10 @@ export UncertainValue, OrsaEvent, Event_from_cartesian, Event_from_spherical,
        HistogramND, CPU, GPU, AbstractParameter, ValueParameter, corr2cov, cov2corr, Results, corner
 
 include("types.jl")
+include("generator.jl")
 include("model.jl")
 include("event.jl")
 include("histogram.jl")
-include("generator.jl")
 include("reactor.jl")
 include("oscillation.jl")
 include("xsection.jl")
