@@ -29,6 +29,7 @@ mutable struct OscillationModel{T} <: AbstractOscillationProbability
     output_prob::Union{Nothing, Vector{T}}        # Cached probabilities
     cached_subsamples::Union{Nothing, Vector{T}}  # Cached integration subsamples
     cache_hash::UInt64                            # Hash of current inputs
+    lock::ReentrantLock
 end
 
 # Constructor with hash for cache consistency
@@ -49,7 +50,7 @@ function OscillationModel{T}(;
               density, osc_type, component, integration_method, subsample_resolution))
     return OscillationModel{T}(energy, distance, dm2_21, dm2_31, s2_12, s2_13,
                                density, osc_type, component, integration_method,
-                               subsample_resolution, nothing, nothing, h)
+                               subsample_resolution, nothing, nothing, h, ReentrantLock())
 end
 
 function OscillationModel(; kwargs...)
@@ -149,37 +150,43 @@ end
 
 # Compute survival probabilities for all energy bins with caching
 function get_probs(m::OscillationModel{T}) where T
-    # println("Computing oscillation probabilities with integration method: $(m.integration_method)")
+    # Double-checked locking pattern
     h = hash(m)
     if m.output_prob !== nothing && m.cache_hash == h
-        # println("Using cached oscillation probabilities")
         return m.output_prob
     end
 
-    base_pts = m.cached_subsamples === nothing ? generate_samples(m) : m.cached_subsamples
-
-    probs = similar(m.energy)
-    Threads.@threads for i in eachindex(m.energy)
-        E = m.energy[i]
-        lo = E - 0.5 * (i == 1 ? (m.energy[2] - m.energy[1]) : (m.energy[i] - m.energy[i-1]))
-        hi = E + 0.5 * (i == length(m.energy) ? (m.energy[end] - m.energy[end-1]) : (m.energy[i+1] - m.energy[i]))
-
-        if m.integration_method == :center
-            val = m.osc_type == :vacuum ? prob_vacuum(E, m.distance, m) :
-                                          prob_matter(E, m.distance, m)
-        else
-            samples = select_bin_samples(lo, hi, base_pts, m.integration_method)
-            vals = [m.osc_type == :vacuum ? prob_vacuum(x, m.distance, m) :
-                                            prob_matter(x, m.distance, m) for x in samples]
-            val = mean(vals)
+    lock(m.lock) do
+        # Re-check after acquiring the lock
+        if m.output_prob !== nothing && m.cache_hash == h
+            return
         end
-        probs[i] = val
-    end
 
-    m.cached_subsamples = m.integration_method in [:subsample, :random] ? base_pts : nothing
-    m.output_prob = probs
-    m.cache_hash = h
-    return probs
+        base_pts = m.cached_subsamples === nothing ? generate_samples(m) : m.cached_subsamples
+
+        probs = similar(m.energy)
+        Threads.@threads for i in eachindex(m.energy)
+            E = m.energy[i]
+            lo = E - 0.5 * (i == 1 ? (m.energy[2] - m.energy[1]) : (m.energy[i] - m.energy[i-1]))
+            hi = E + 0.5 * (i == length(m.energy) ? (m.energy[end] - m.energy[end-1]) : (m.energy[i+1] - m.energy[i]))
+
+            if m.integration_method == :center
+                val = m.osc_type == :vacuum ? prob_vacuum(E, m.distance, m) :
+                                              prob_matter(E, m.distance, m)
+            else
+                samples = select_bin_samples(lo, hi, base_pts, m.integration_method)
+                vals = [m.osc_type == :vacuum ? prob_vacuum(x, m.distance, m) :
+                                                prob_matter(x, m.distance, m) for x in samples]
+                val = mean(vals)
+            end
+            probs[i] = val
+        end
+
+        m.cached_subsamples = m.integration_method in [:subsample, :random] ? base_pts : nothing
+        m.output_prob = probs
+        m.cache_hash = h
+    end
+    return m.output_prob
 end
 
 # Apply oscillation probability to a histogram by scaling energy axis

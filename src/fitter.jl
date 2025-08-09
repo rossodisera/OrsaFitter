@@ -2,14 +2,17 @@
 
 module FitterModule
 
-export FitParameter, AbstractCostFunction, BinnedLogLikelihoodCost, UnbinnedLogLikelihoodCost, GlobalFitter, create_objective_function, log_likelihood_poisson
+export FitParameter, AbstractCostFunction, BinnedLogLikelihoodCost, UnbinnedLogLikelihoodCost, GlobalFitter, create_objective_function, log_likelihood_poisson, get_profile
 export run_minuit_fit, run_mcmc_sampler, run_nested_sampler # Expose all new functions
 
 using ..Types
 using ..EventModule
 using ..HistogramModule
+using ..ModelModule
+using ..ResultsModule
 using Base.Threads
 using Logging
+using ForwardDiff
 
 # --- External Dependencies for Fitting ---
 # The user must have these packages in their environment, e.g., via Pkg.add(...)
@@ -18,22 +21,13 @@ using Turing, Distributions # For MCMC
 using NestedSamplers # For Nested Sampling
 
 
-# --- FitParameter Struct ---
-
-"""
-    FitParameter
-
-Represents a single parameter in the fit, including its bounds and other properties like priors.
-"""
-struct FitParameter
-    initial_value::Float64
-    lower_bound::Float64
-    upper_bound::Float64
-    prior::Union{Distribution, Nothing}
+function get_value_param(p::AbstractParameter)
+    if isa(p, ValueParameter)
+        return p
+    else
+        return p.param
+    end
 end
-
-FitParameter(initial_value::Float64, lower_bound::Float64, upper_bound::Float64) = FitParameter(initial_value, lower_bound, upper_bound, nothing)
-
 
 # --- Cost Function Abstraction ---
 
@@ -69,7 +63,7 @@ Orchestrates a combined fit of one or more cost functions with a shared set of p
 """
 struct GlobalFitter
     cost_functions::Vector{AbstractCostFunction}
-    parameters::Dict{Symbol, FitParameter}
+    parameters::Dict{Symbol, AbstractParameter}
 end
 
 
@@ -90,7 +84,7 @@ function log_likelihood_poisson(data::AbstractHistogramND, mc::AbstractHistogram
 
     # Calculate log-likelihood for the safe bins
     log_likelihood = sum(data_counts[safe_mask] .* log.(mc_counts[safe_mask]) .- mc_counts[safe_mask])
-    
+
     # Handle the unsafe bins
     # If observed counts are positive where expected is zero, likelihood is -Inf
     if any(data_counts[.!safe_mask] .> 0)
@@ -143,8 +137,14 @@ function create_objective_function(fitter::GlobalFitter)
         
         return -total_logL
     end
+
+    function objective_function_gradient(param_values)
+        g = similar(param_values)
+        ForwardDiff.gradient!(g, objective_function, param_values)
+        return g
+    end
     
-    return objective_function
+    return objective_function, objective_function_gradient
 end
 
 
@@ -155,24 +155,28 @@ end
 
 Performs a fit using the Minuit minimizer and returns the result.
 """
-function run_minuit_fit(fitter::GlobalFitter)
+function run_minuit_fit(fitter::GlobalFitter; use_grad=true)
     @info "--- Setting up Minuit Fit ---"
     
-    objective_func = create_objective_function(fitter)
+    objective_func, objective_grad = create_objective_function(fitter)
     
     # CORRECTED: Prepare parameters as separate lists/tuples for the constructor
     ordered_param_names_sym = collect(keys(fitter.parameters))
-    initial_values = [fitter.parameters[name].initial_value for name in ordered_param_names_sym]
+    initial_values = [get_value_param(fitter.parameters[name]).initial_value for name in ordered_param_names_sym]
     param_names_tuple = Tuple(string.(ordered_param_names_sym))
 
     limit_tuples = Tuple(
-        name => (fitter.parameters[name].lower_bound, fitter.parameters[name].upper_bound)
+        name => (get_value_param(fitter.parameters[name]).lower_bound, get_value_param(fitter.parameters[name]).upper_bound)
         for name in ordered_param_names_sym
     )
     limits = NamedTuple(limit_tuples)
     
     # Use the robust constructor with a vector of values and a tuple of names
-    m = Minuit(objective_func, initial_values; names=param_names_tuple, limits=limits, errordef=0.5)
+    if use_grad
+        m = Minuit(objective_func, initial_values; names=param_names_tuple, limits=limits, errordef=0.5, grad=objective_grad)
+    else
+        m = Minuit(objective_func, initial_values; names=param_names_tuple, limits=limits, errordef=0.5)
+    end
 
     @info "--- Running MIGRAD Minimization ---"
     Minuit2.migrad!(m)
@@ -180,8 +184,18 @@ function run_minuit_fit(fitter::GlobalFitter)
     @info "--- Fit Complete ---"
     @info "Valid fit: $(m.fmin.is_valid)"
     @info "Function minimum: $(m.fmin.fval)"
+
+    labels = [string(s) for s in ordered_param_names_sym]
     
-    return m
+    return Results(
+        values=m.values,
+        errors=m.errors,
+        correlation=m.correlation,
+        cost_function=fitter,
+        obj=m,
+        labels=labels,
+        formatted_labels=labels
+    )
 end
 
 """
@@ -199,7 +213,7 @@ function run_mcmc_sampler(fitter::GlobalFitter; n_samples=1000, n_chains=4)
         # Define priors for each parameter
         params = Vector{Any}(undef, length(fitter.parameters))
         for (i, name) in enumerate(ordered_param_names)
-            p = fitter.parameters[name]
+            p = get_value_param(fitter.parameters[name])
             if p.prior === nothing
                 # Assumes a uniform prior based on the parameter bounds
                 params[i] ~ Uniform(p.lower_bound, p.upper_bound)
@@ -239,7 +253,7 @@ function run_nested_sampler(fitter::GlobalFitter; nlive=100, dlogz=0.1)
     function prior_transform(u)
         params = similar(u)
         for (i, name) in enumerate(ordered_param_names)
-            p = fitter.parameters[name]
+            p = get_value_param(fitter.parameters[name])
             # Uniform transform: scale from [0, 1] to [low, high]
             params[i] = p.lower_bound + u[i] * (p.upper_bound - p.lower_bound)
         end
@@ -261,6 +275,51 @@ function run_nested_sampler(fitter::GlobalFitter; nlive=100, dlogz=0.1)
     @info state # Prints summary statistics like log-evidence
     
     return chain, state
+end
+
+function get_profile(fitter::GlobalFitter, parameter::Symbol; n_steps=10, range=2.0)
+    @info "Calculating profile likelihood for parameter $parameter"
+
+    # 1. Get the initial best-fit result
+    initial_result = run_minuit_fit(fitter)
+    best_fit_values = initial_result.values
+    min_nll = initial_result.fmin.fval
+
+    param_index = findfirst(p -> p == parameter, collect(keys(fitter.parameters)))
+    if param_index === nothing
+        error("Parameter $parameter not found in the fitter.")
+    end
+
+    # 2. Define the scan range
+    p = get_value_param(fitter.parameters[parameter])
+    param_best_fit = best_fit_values[param_index]
+    param_error = initial_result.errors[param_index]
+    scan_range = range(param_best_fit - range * param_error, param_best_fit + range * param_error, length=n_steps)
+
+    nll_values = zeros(n_steps)
+
+    # 3. Create a new fitter for profiling
+    profile_fitter = deepcopy(fitter)
+
+    for (i, val) in enumerate(scan_range)
+        @info "Profiling $parameter at value $val"
+
+        # 4a. Fix the parameter of interest
+        profile_fitter.parameters[parameter] = ValueParameter(
+            label=string(parameter),
+            value = val,
+            fixed = true
+        )
+
+        # 4b. Run the minimizer
+        temp_result = run_minuit_fit(profile_fitter)
+
+        # 4c. Store the NLL
+        nll_values[i] = temp_result.fmin.fval
+    end
+
+    # 5. Return the results, subtracting the minimum NLL
+    return scan_range, nll_values .- min_nll
 end
 
 end # module

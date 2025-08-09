@@ -13,7 +13,9 @@ abstract type AbstractParameter end
 
 mutable struct ValueParameter <: AbstractParameter
     label::String
-    value::Float64
+    initial_value::Float64
+    lower_bound::Float64
+    upper_bound::Float64
     error::Float64
     is_relative::Bool
     fixed::Bool
@@ -21,9 +23,9 @@ mutable struct ValueParameter <: AbstractParameter
     prior::Dict{String, Any}
     group::String
 
-    function ValueParameter(;label, value, error=Inf, is_relative=true, fixed=false, formatted_label=nothing, prior=Dict(), group="")
+    function ValueParameter(;label, initial_value, lower_bound=-Inf, upper_bound=Inf, error=Inf, is_relative=true, fixed=false, formatted_label=nothing, prior=Dict(), group="")
         if is_relative
-            error = error * value
+            error = error * initial_value
         end
         if error == 0
             fixed = true
@@ -31,7 +33,7 @@ mutable struct ValueParameter <: AbstractParameter
         if formatted_label === nothing
             formatted_label = label
         end
-        new(label, value, error, is_relative, fixed, formatted_label, prior, group)
+        new(label, initial_value, lower_bound, upper_bound, error, is_relative, fixed, formatted_label, prior, group)
     end
 end
 
@@ -39,7 +41,9 @@ function to_dict(p::ValueParameter)
     return Dict(
         "type" => "ValueParameter",
         "label" => p.label,
-        "value" => p.value,
+        "initial_value" => p.initial_value,
+        "lower_bound" => p.lower_bound,
+        "upper_bound" => p.upper_bound,
         "error" => p.error,
         "is_relative" => p.is_relative,
         "fixed" => p.fixed,
@@ -97,7 +101,9 @@ function from_dict(d::Dict)
     if type_str == "ValueParameter"
         return ValueParameter(
             label=d["label"],
-            value=d["value"],
+            initial_value=d["initial_value"],
+            lower_bound=d["lower_bound"],
+            upper_bound=d["upper_bound"],
             error=d["error"],
             is_relative=d["is_relative"],
             fixed=d["fixed"],

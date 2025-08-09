@@ -25,11 +25,12 @@ mutable struct ParametricResolutionModel{T<:Real} <: AbstractResolutionModel{T}
     c::Union{T, AbstractHistogramND{T}}
     # Cache for smearing matrices. Key is a hash of (edges, a, b, c).
     cached_matrices::Dict{UInt, Matrix{T}}
+    lock::ReentrantLock
 end
 
 # Constructor that initializes the cache
 function ParametricResolutionModel(a::Union{T, AbstractHistogramND{T}}, b::Union{T, AbstractHistogramND{T}}, c::Union{T, AbstractHistogramND{T}}) where T
-    ParametricResolutionModel(a, b, c, Dict{UInt, Matrix{T}}())
+    ParametricResolutionModel(a, b, c, Dict{UInt, Matrix{T}}(), ReentrantLock())
 end
 
 "Convenience loader for a default JUNO-like parametric resolution model."
@@ -47,38 +48,46 @@ function _sigma_abc(E::T, a::T, b::T, c::T) where T
 end
 
 "Computes a Gaussian smearing matrix for a single set of resolution parameters, using a cache."
-function _get_single_smearing_matrix(vis_edges::Vector{T}, a::T, b::T, c::T, cache::Dict{UInt, Matrix{T}}) where T
-    # Check the cache first
+function _get_single_smearing_matrix(vis_edges::Vector{T}, a::T, b::T, c::T, model::ParametricResolutionModel{T}) where T
     params_hash = hash((vis_edges, a, b, c))
-    if haskey(cache, params_hash)
-        return cache[params_hash]
+
+    # First, check if the matrix is in the cache without locking
+    if haskey(model.cached_matrices, params_hash)
+        return model.cached_matrices[params_hash]
     end
 
-    n_bins = length(vis_edges) - 1
-    vis_centers = (vis_edges[1:end-1] .+ vis_edges[2:end]) ./ 2
-    smearing_matrix = zeros(T, n_bins, n_bins)
-    sqrt2 = sqrt(2.0)
-
-    for j in 1:n_bins # For each "true" energy bin
-        E_true = vis_centers[j]
-        sigma = _sigma_abc(E_true, a, b, c)
-
-        if sigma <= 0
-            smearing_matrix[j, j] = 1.0
-            continue
+    # If not, lock and re-check, then compute if necessary
+    lock(model.lock) do
+        if haskey(model.cached_matrices, params_hash)
+            return model.cached_matrices[params_hash]
         end
 
-        for i in 1:n_bins # For each "reco" energy bin
-            E_low, E_high = vis_edges[i], vis_edges[i+1]
-            z_low = (E_low - E_true) / (sigma * sqrt2)
-            z_high = (E_high - E_true) / (sigma * sqrt2)
-            smearing_matrix[i, j] = 0.5 * (erf(z_high) - erf(z_low))
+        n_bins = length(vis_edges) - 1
+        vis_centers = (vis_edges[1:end-1] .+ vis_edges[2:end]) ./ 2
+        smearing_matrix = zeros(T, n_bins, n_bins)
+        sqrt2 = sqrt(2.0)
+
+        @threads for j in 1:n_bins # For each "true" energy bin
+            E_true = vis_centers[j]
+            sigma = _sigma_abc(E_true, a, b, c)
+
+            if sigma <= 0
+                smearing_matrix[j, j] = 1.0
+                continue
+            end
+
+            for i in 1:n_bins # For each "reco" energy bin
+                E_low, E_high = vis_edges[i], vis_edges[i+1]
+                z_low = (E_low - E_true) / (sigma * sqrt2)
+                z_high = (E_high - E_true) / (sigma * sqrt2)
+                smearing_matrix[i, j] = 0.5 * (erf(z_high) - erf(z_low))
+            end
         end
+
+        # Store the newly computed matrix in the cache
+        model.cached_matrices[params_hash] = smearing_matrix
+        return smearing_matrix
     end
-
-    # Store the newly computed matrix in the cache
-    cache[params_hash] = smearing_matrix
-    return smearing_matrix
 end
 
 function apply_resolution(hist_vis::AbstractHistogramND{T, N}, model::ParametricResolutionModel{T}) where {T, N}
@@ -100,7 +109,7 @@ function apply_resolution(hist_vis::AbstractHistogramND{T, N}, model::Parametric
         a = isa(model.a, Number) ? model.a : model.a.counts[]
         b = isa(model.b, Number) ? model.b : model.b.counts[]
         c = isa(model.c, Number) ? model.c : model.c.counts[]
-        smearing_matrix = _get_single_smearing_matrix(vis_edges, a, b, c, model.cached_matrices)
+        smearing_matrix = _get_single_smearing_matrix(vis_edges, a, b, c, model)
         hist_smeared.counts = smearing_matrix * hist_vis.counts
         hist_smeared.variances = (smearing_matrix.^2) * hist_vis.variances
     else
@@ -133,7 +142,7 @@ function apply_resolution(hist_vis::AbstractHistogramND{T, N}, model::Parametric
             b = get_param_value(model.b, non_energy_dims_symbols, idx_ne)
             c = get_param_value(model.c, non_energy_dims_symbols, idx_ne)
 
-            smearing_matrix = _get_single_smearing_matrix(vis_edges, a, b, c, model.cached_matrices)
+            smearing_matrix = _get_single_smearing_matrix(vis_edges, a, b, c, model)
 
             view(hist_smeared.counts, full_idx_slice...) .= smearing_matrix * view(hist_vis.counts, full_idx_slice...)
             view(hist_smeared.variances, full_idx_slice...) .= (smearing_matrix.^2) * view(hist_vis.variances, full_idx_slice...)

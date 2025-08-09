@@ -1,7 +1,7 @@
 module OrsaFitter
 
 export UncertainValue, OrsaEvent, Event_from_cartesian, Event_from_spherical,
-       HistogramND, CPU, GPU, AbstractParameter, ValueParameter, corr2cov, cov2corr, Results, corner, chains
+       HistogramND, CPU, GPU, AbstractParameter, ValueParameter, corr2cov, cov2corr, Results, corner
 
 include("types.jl")
 include("model.jl")

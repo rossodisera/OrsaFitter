@@ -175,6 +175,7 @@ end
 # --- Flux model and normalization utils --- #
 
 const FLUX_CACHE = Dict{String, Any}()
+const FLUX_CACHE_LOCK = ReentrantLock()
 
 function format_isotope_for_filename(iso::String)
     m = match(r"([A-Za-z]+)([0-9]+)", iso)
@@ -192,12 +193,17 @@ function load_bump_correction(path::String)
 end
 
 function get_reactor_flux_function(model::String, ff)
-    if !haskey(FLUX_CACHE, model)
-        path = joinpath(@__DIR__, "..", "data", "flux_" * model)
-        isotopes = ["U235", "U238", "Pu239", "Pu241"]
-        interp_flux = Dict(iso => load_log_flux(joinpath(path, "log_flux_$(format_isotope_for_filename(iso)).dat")) for iso in isotopes)
-        bump = model == "hm_bump" ? load_bump_correction(joinpath(@__DIR__, "..", "data", "flux_CommonInput", "bumpcorrection.dat")) : nothing
-        FLUX_CACHE[model] = (interp_flux, bump)
+    lock(FLUX_CACHE_LOCK) do
+        if !haskey(FLUX_CACHE, model)
+            path = joinpath(@__DIR__, "..", "data", "flux_" * model)
+            isotopes = ["U235", "U238", "Pu239", "Pu241"]
+            interp_flux = Dict{String, Any}()
+            @threads for iso in isotopes
+                interp_flux[iso] = load_log_flux(joinpath(path, "log_flux_$(format_isotope_for_filename(iso)).dat"))
+            end
+            bump = model == "hm_bump" ? load_bump_correction(joinpath(@__DIR__, "..", "data", "flux_CommonInput", "bumpcorrection.dat")) : nothing
+            FLUX_CACHE[model] = (interp_flux, bump)
+        end
     end
 
     interp_flux, bump = FLUX_CACHE[model]
